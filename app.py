@@ -1,13 +1,13 @@
 from flask import Flask, request, jsonify
 import os
 import tempfile
-# import torch
+import torch
 import numpy as np
 import librosa
 import subprocess
 import io
 from pydub import AudioSegment
-# from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
+from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification, Wav2Vec2ForCTC, Wav2Vec2Tokenizer
 
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
@@ -21,7 +21,10 @@ MODEL_PATH = "speech_emotion_recognition_model"  # Update this with your saved m
 SAMPLING_RATE = 16000
 MAX_LENGTH = 32000
 
+
 # Load model and tokenizer
+asr_tokenizer = Wav2Vec2Tokenizer.from_pretrained("facebook/wav2vec2-base-960h")
+asr_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-base-960h")
 kado_model = load_model("model/text_classifier_model.keras")
 
 with open("model/tokenizer.pkl", "rb") as f:
@@ -29,6 +32,44 @@ with open("model/tokenizer.pkl", "rb") as f:
 
 maxlen = 79  # Must match the value used during training
 
+@app.route('/transcribe', methods=['POST'])
+def transcribe():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part in the request'}), 400
+
+    file = request.files['file']
+
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+
+    try:
+        # Save uploaded file
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        file.save(temp_file.name)
+        temp_file.close()
+
+        # Load and process audio
+        speech, _ = librosa.load(temp_file.name, sr=16000)
+        os.unlink(temp_file.name)  # clean up
+
+        # Tokenize and predict
+        input_values = asr_tokenizer(speech, return_tensors="pt", padding="longest").input_values
+        with torch.no_grad():
+            logits = asr_model(input_values).logits
+        predicted_ids = torch.argmax(logits, dim=-1)
+
+        # Decode the transcription
+        transcription = asr_tokenizer.decode(predicted_ids[0])
+
+        return jsonify({
+            'transcription': transcription
+        })
+
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'message': 'Failed to transcribe audio. Ensure it is a valid WAV file.'
+        }), 500
 
 @app.route('/text', methods=['POST'])
 def predictText():
